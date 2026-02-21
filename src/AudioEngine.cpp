@@ -68,35 +68,39 @@ std::vector<AudioDeviceInfo> AudioEngine::getOutputDevices() const {
 bool AudioEngine::openDevice(const std::string& deviceName, Mode mode) {
     mode_ = mode;
 
-    juce::AudioDeviceManager::AudioDeviceSetup setup;
-    setup.sampleRate = streamConfig_.sampleRate;
-    setup.bufferSize = static_cast<int>(streamConfig_.bufferSize);
+    int numInputChannels = (mode == Mode::Sender) ? static_cast<int>(streamConfig_.channels) : 0;
+    int numOutputChannels = (mode == Mode::Receiver) ? static_cast<int>(streamConfig_.channels) : 0;
 
-    if (mode == Mode::Sender) {
-        setup.inputDeviceName = juce::String(deviceName);
-        setup.outputDeviceName = "";
-        setup.useDefaultInputChannels = true;
-        setup.inputChannels.setRange(0, streamConfig_.channels, true);
-    } else {
-        setup.inputDeviceName = "";
-        setup.outputDeviceName = juce::String(deviceName);
-        setup.useDefaultOutputChannels = true;
-        setup.outputChannels.setRange(0, streamConfig_.channels, true);
-    }
-
-    juce::String error;
-    if (deviceName.empty()) {
-        // Use default device
-        int numInputChannels = (mode == Mode::Sender) ? streamConfig_.channels : 0;
-        int numOutputChannels = (mode == Mode::Receiver) ? streamConfig_.channels : 0;
-        error = deviceManager_->initialise(numInputChannels, numOutputChannels, nullptr, true);
-    } else {
-        error = deviceManager_->setAudioDeviceSetup(setup, true);
-    }
-
+    // Initialize device manager first
+    juce::String error = deviceManager_->initialise(numInputChannels, numOutputChannels, nullptr, true);
     if (error.isNotEmpty()) {
-        std::cerr << "Failed to open audio device: " << error.toStdString() << std::endl;
+        std::cerr << "Failed to initialize audio: " << error.toStdString() << std::endl;
         return false;
+    }
+
+    // If a specific device is requested, configure it
+    if (!deviceName.empty()) {
+        juce::AudioDeviceManager::AudioDeviceSetup setup;
+        deviceManager_->getAudioDeviceSetup(setup);
+
+        setup.sampleRate = streamConfig_.sampleRate;
+        setup.bufferSize = static_cast<int>(streamConfig_.bufferSize);
+
+        if (mode == Mode::Sender) {
+            setup.inputDeviceName = juce::String(deviceName);
+            setup.useDefaultInputChannels = true;
+            setup.inputChannels.setRange(0, streamConfig_.channels, true);
+        } else {
+            setup.outputDeviceName = juce::String(deviceName);
+            setup.useDefaultOutputChannels = true;
+            setup.outputChannels.setRange(0, streamConfig_.channels, true);
+        }
+
+        error = deviceManager_->setAudioDeviceSetup(setup, true);
+        if (error.isNotEmpty()) {
+            std::cerr << "Failed to open device '" << deviceName << "': " << error.toStdString() << std::endl;
+            return false;
+        }
     }
 
     deviceManager_->addAudioCallback(this);

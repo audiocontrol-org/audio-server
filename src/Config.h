@@ -27,6 +27,8 @@ struct Config {
     bool verbose = false;
     bool listDevices = false;
     bool showHelp = false;
+    bool testTone = false;
+    uint32_t testToneFrequency = 440;
 
     static Config fromArgs(int argc, char* argv[]);
     static void printUsage();

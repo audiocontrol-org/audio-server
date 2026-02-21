@@ -47,6 +47,10 @@ Config Config::fromArgs(int argc, char* argv[]) {
             } else {
                 throw std::runtime_error("Invalid transport: " + transport);
             }
+        } else if (arg == "--test-tone") {
+            config.testTone = true;
+        } else if (arg == "--test-tone-freq" && i + 1 < argc) {
+            config.testToneFrequency = static_cast<uint32_t>(std::stoi(argv[++i]));
         } else {
             throw std::runtime_error("Unknown argument: " + arg);
         }
@@ -71,6 +75,8 @@ OPTIONS:
     --channels <N>          Number of channels (default: 2)
     --buffer-size <SIZE>    Buffer size in samples (default: 512)
     --transport <TYPE>      Transport backend: tcp-pcm (default: tcp-pcm)
+    --test-tone             Generate test tone instead of capturing audio (sender only)
+    --test-tone-freq <HZ>   Test tone frequency in Hz (default: 440)
     --list-devices          List available audio devices and exit
     --verbose, -v           Enable verbose logging
     --help, -h              Show this help message

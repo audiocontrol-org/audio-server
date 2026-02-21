@@ -2,11 +2,14 @@
 #include "AudioEngine.h"
 #include "ApiServer.h"
 #include "RingBuffer.h"
+#include "ToneGenerator.h"
 #include "transport/TcpPcmBackend.h"
 #include <juce_core/juce_core.h>
 #include <iostream>
 #include <csignal>
 #include <atomic>
+#include <thread>
+#include <chrono>
 
 namespace {
     std::atomic<bool> g_running{true};
@@ -70,17 +73,19 @@ int main(int argc, char* argv[]) {
     audioserver::RingBuffer<float> ringBuffer(ringBufferSize);
 
     // Connect audio engine and transport
-    if (config.mode == audioserver::Mode::Sender) {
+    bool useTestTone = config.testTone && config.mode == audioserver::Mode::Sender;
+
+    if (config.mode == audioserver::Mode::Sender && !useTestTone) {
         audioEngine.setAudioCallback([&transport](const float* const* data, int channels, int samples) {
             transport.sendAudio(data, channels, samples);
         });
-    } else {
-        transport.setAudioReceivedCallback([&ringBuffer, &config](const float* data, int channels, int samples) {
+    } else if (config.mode == audioserver::Mode::Receiver) {
+        transport.setAudioReceivedCallback([&ringBuffer](const float* data, int channels, int samples) {
             size_t totalSamples = static_cast<size_t>(channels * samples);
             ringBuffer.write(data, totalSamples);
         });
 
-        audioEngine.setPlaybackCallback([&ringBuffer, &config](float* const* data, int channels, int samples) {
+        audioEngine.setPlaybackCallback([&ringBuffer](float* const* data, int channels, int samples) {
             size_t totalSamples = static_cast<size_t>(channels * samples);
             std::vector<float> interleavedBuffer(totalSamples);
 
@@ -101,13 +106,19 @@ int main(int argc, char* argv[]) {
         });
     }
 
-    // Open audio device
-    if (!audioEngine.openDevice(config.device, config.mode)) {
-        std::cerr << "Failed to open audio device\n";
-        return 1;
-    }
+    audioserver::StreamConfig streamConfig;
+    streamConfig.sampleRate = config.sampleRate;
+    streamConfig.channels = config.channels;
+    streamConfig.bufferSize = config.bufferSize;
 
-    auto streamConfig = audioEngine.getStreamConfig();
+    // Open audio device (not needed for test-tone sender)
+    if (!useTestTone) {
+        if (!audioEngine.openDevice(config.device, config.mode)) {
+            std::cerr << "Failed to open audio device\n";
+            return 1;
+        }
+        streamConfig = audioEngine.getStreamConfig();
+    }
 
     // Start transport
     bool transportStarted = false;
@@ -133,7 +144,11 @@ int main(int argc, char* argv[]) {
     // Print startup info
     std::string modeStr = (config.mode == audioserver::Mode::Sender) ? "sender" : "receiver";
     std::cout << "audio-server started in " << modeStr << " mode\n";
-    std::cout << "  Device: " << audioEngine.getCurrentDeviceName() << "\n";
+    if (useTestTone) {
+        std::cout << "  Source: Test tone (" << config.testToneFrequency << " Hz)\n";
+    } else {
+        std::cout << "  Device: " << audioEngine.getCurrentDeviceName() << "\n";
+    }
     std::cout << "  Sample rate: " << streamConfig.sampleRate << " Hz\n";
     std::cout << "  Channels: " << streamConfig.channels << "\n";
     std::cout << "  Buffer size: " << streamConfig.bufferSize << " samples\n";
@@ -149,6 +164,54 @@ int main(int argc, char* argv[]) {
     // Set up signal handler
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
+
+    // Test tone generator thread for sender mode
+    std::thread toneThread;
+    if (useTestTone) {
+        toneThread = std::thread([&]() {
+            audioserver::ToneGenerator toneGen(streamConfig.sampleRate,
+                                                config.testToneFrequency,
+                                                streamConfig.channels);
+
+            const int bufferSize = static_cast<int>(streamConfig.bufferSize);
+            const int channels = static_cast<int>(streamConfig.channels);
+
+            std::vector<float*> channelPtrs(static_cast<size_t>(channels));
+            std::vector<std::vector<float>> channelBuffers(static_cast<size_t>(channels));
+
+            for (int ch = 0; ch < channels; ++ch) {
+                channelBuffers[static_cast<size_t>(ch)].resize(static_cast<size_t>(bufferSize));
+                channelPtrs[static_cast<size_t>(ch)] = channelBuffers[static_cast<size_t>(ch)].data();
+            }
+
+            // Use steady clock for accurate timing
+            auto bufferDuration = std::chrono::microseconds(
+                static_cast<long>(1000000.0 * bufferSize / streamConfig.sampleRate));
+            auto nextTime = std::chrono::steady_clock::now();
+
+            while (g_running) {
+                auto status = transport.getStatus();
+                if (status.state == audioserver::TransportState::Streaming) {
+                    toneGen.generate(channelPtrs.data(), channels, bufferSize);
+                    transport.sendAudio(const_cast<const float* const*>(channelPtrs.data()),
+                                       channels, bufferSize);
+
+                    // Schedule next buffer at precise interval
+                    nextTime += bufferDuration;
+                    auto now = std::chrono::steady_clock::now();
+                    if (nextTime > now) {
+                        std::this_thread::sleep_until(nextTime);
+                    } else {
+                        // We're behind, reset timing
+                        nextTime = now;
+                    }
+                } else {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    nextTime = std::chrono::steady_clock::now();
+                }
+            }
+        });
+    }
 
     // Main loop
     while (g_running) {
@@ -169,6 +232,11 @@ int main(int argc, char* argv[]) {
                       << " | Recv: " << status.bytesReceived / 1024 << " KB"
                       << " | Lost: " << status.packetsLost << "   " << std::flush;
         }
+    }
+
+    // Wait for tone thread to finish
+    if (toneThread.joinable()) {
+        toneThread.join();
     }
 
     std::cout << "\nShutting down...\n";
