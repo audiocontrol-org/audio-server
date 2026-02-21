@@ -20,6 +20,7 @@ public:
         depth_--;
         needsComma_.pop_back();
         append("}");
+        markNeedsComma();
         return *this;
     }
 
@@ -34,6 +35,7 @@ public:
         depth_--;
         needsComma_.pop_back();
         append("]");
+        markNeedsComma();
         return *this;
     }
 
